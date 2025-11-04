@@ -7,6 +7,7 @@ namespace NNImage.Services;
 /// <summary>
 /// Monitors system memory usage and triggers streaming/pausing when approaching RAM limit
 /// Prevents system-wide freezes by managing memory proactively
+/// Uses cross-platform .NET Core GC memory info for accurate RAM tracking
 /// </summary>
 public class MemoryMonitor
 {
@@ -15,10 +16,6 @@ public class MemoryMonitor
     private readonly long _pauseThresholdBytes;
     private long _lastMemoryCheck = 0;
     private readonly long _checkIntervalTicks;
-
-    // Performance counters for accurate system-wide RAM measurement
-    private readonly PerformanceCounter? _ramCounter;
-    private bool _useProcessMemory = false;
 
     public MemoryMonitor(int maxRamGB = 30)
     {
@@ -30,23 +27,11 @@ public class MemoryMonitor
         Console.WriteLine($"[MemoryMonitor] Initialized with {maxRamGB}GB limit");
         Console.WriteLine($"[MemoryMonitor] Streaming threshold: {_streamingThresholdBytes / (1024 * 1024 * 1024)}GB ({(_streamingThresholdBytes * 100.0 / _maxRamBytes):F1}%)");
         Console.WriteLine($"[MemoryMonitor] Pause threshold: {_pauseThresholdBytes / (1024 * 1024 * 1024)}GB ({(_pauseThresholdBytes * 100.0 / _maxRamBytes):F1}%)");
-
-        // Try to create performance counter for system-wide RAM monitoring
-        try
-        {
-            _ramCounter = new PerformanceCounter("Memory", "Available MBytes");
-            _ramCounter.NextValue(); // Initialize
-            Console.WriteLine("[MemoryMonitor] Using system-wide RAM monitoring");
-        }
-        catch
-        {
-            _useProcessMemory = true;
-            Console.WriteLine("[MemoryMonitor] Falling back to process memory monitoring");
-        }
+        Console.WriteLine("[MemoryMonitor] Using cross-platform GC memory info for RAM tracking");
     }
 
     /// <summary>
-    /// Check current memory usage. Returns true if we should continue, false if we need to pause.
+    /// Check current memory usage. Returns status based on thresholds.
     /// </summary>
     public MemoryStatus CheckMemory()
     {
@@ -60,26 +45,22 @@ public class MemoryMonitor
 
         _lastMemoryCheck = now;
 
-        long usedBytes;
+        // Use GC memory info for cross-platform accurate memory tracking
+        var gcInfo = GC.GetGCMemoryInfo();
 
-        if (_useProcessMemory)
+        // Get process working set for process-specific RAM usage
+        long usedBytes;
+        using (var process = Process.GetCurrentProcess())
         {
-            // Fallback: use process memory
-            using var process = Process.GetCurrentProcess();
             usedBytes = process.WorkingSet64;
         }
-        else if (_ramCounter != null)
-        {
-            // Primary: use system-wide available RAM
-            var availableMB = _ramCounter.NextValue();
-            var totalRAM = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
-            usedBytes = totalRAM - ((long)availableMB * 1024 * 1024);
-        }
-        else
-        {
-            // Last resort: GC memory info
-            usedBytes = GC.GetTotalMemory(false);
-        }
+
+        // Also check heap size for managed allocations
+        var heapSize = gcInfo.HeapSizeBytes;
+        var totalLoad = gcInfo.MemoryLoadBytes;
+
+        // Use the maximum of process working set, heap size, or memory load
+        usedBytes = Math.Max(usedBytes, Math.Max(heapSize, totalLoad));
 
         var usedPercent = (usedBytes * 100.0) / _maxRamBytes;
 
@@ -149,7 +130,7 @@ public class MemoryMonitor
 
     public void Dispose()
     {
-        _ramCounter?.Dispose();
+        // Nothing to dispose - using built-in GC memory info
     }
 }
 

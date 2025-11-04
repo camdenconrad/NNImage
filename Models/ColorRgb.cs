@@ -1,6 +1,6 @@
 using System;
 
-namespace NNImage;
+namespace NNImage.Models;
 
 public readonly struct ColorRgb : IEquatable<ColorRgb>
 {

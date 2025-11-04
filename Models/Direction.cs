@@ -1,4 +1,4 @@
-namespace NNImage;
+namespace NNImage.Models;
 
 public enum Direction
 {

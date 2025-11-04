@@ -6,7 +6,7 @@ using System.Runtime.CompilerServices;
 namespace NNImage.Models;
 
 /// <summary>
-/// Ultra-fast graph for SUPER FAST training
+/// Ultra-fast graph for SUPER FAST training with thread-safety
 /// Simple node-based structure with weighted edges
 /// No complex nested dictionaries - just nodes and edges!
 /// </summary>
@@ -26,6 +26,40 @@ public class FastContextGraph
     // Simple statistics
     private int _totalEdges = 0;
 
+    // Thread-safety locks
+    private readonly object _graphLock = new object();
+
+    /// <summary>
+    /// Create a node without attempting to merge with existing nodes.
+    /// Used for deterministic reconstruction during snapshot load.
+    /// </summary>
+    public GraphNode CreateNodeExact(ColorRgb color, float normalizedX, float normalizedY, int observationCount = 1)
+    {
+        var gridKey = GetGridKey(normalizedX, normalizedY);
+        lock (_graphLock)
+        {
+            var newNode = new GraphNode(color, normalizedX, normalizedY)
+            {
+                ObservationCount = observationCount
+            };
+            _allNodes.Add(newNode);
+
+            if (!_nodesByColor.ContainsKey(color))
+            {
+                _nodesByColor[color] = new List<GraphNode>();
+            }
+            _nodesByColor[color].Add(newNode);
+
+            if (!_spatialGrid.ContainsKey(gridKey))
+            {
+                _spatialGrid[gridKey] = new List<GraphNode>();
+            }
+            _spatialGrid[gridKey].Add(newNode);
+
+            return newNode;
+        }
+    }
+
     public FastContextGraph()
     {
         Console.WriteLine("[FastContextGraph] Initialized ultra-fast node-based graph");
@@ -33,17 +67,16 @@ public class FastContextGraph
 
     /// <summary>
     /// Add or get a node at the specified color and position
-    /// SUPER FAST - uses spatial hashing
+    /// OPTIMIZED - reduced lock contention with read-before-write pattern
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public GraphNode GetOrCreateNode(ColorRgb color, float normalizedX, float normalizedY)
     {
-        // Check spatial grid for nearby existing node
         var gridKey = GetGridKey(normalizedX, normalizedY);
 
+        // OPTIMIZATION: Try read-only check first without lock (fast path for existing nodes)
         if (_spatialGrid.TryGetValue(gridKey, out var cellNodes))
         {
-            // Look for matching node in this grid cell
+            // Look for matching node in this grid cell WITHOUT lock first
             for (int i = 0; i < cellNodes.Count; i++)
             {
                 var node = cellNodes[i];
@@ -56,32 +89,57 @@ public class FastContextGraph
                     // If close enough (within 5% of image), reuse node
                     if (distSq < 0.0025f) // sqrt(0.0025) = 0.05 = 5%
                     {
-                        node.ObservationCount++;
+                        System.Threading.Interlocked.Increment(ref node.ObservationCount);
                         return node;
                     }
                 }
             }
         }
 
-        // Create new node
-        var newNode = new GraphNode(color, normalizedX, normalizedY);
-        _allNodes.Add(newNode);
-
-        // Add to color index
-        if (!_nodesByColor.ContainsKey(color))
+        // Slow path: Need to create new node (requires lock)
+        lock (_graphLock)
         {
-            _nodesByColor[color] = new List<GraphNode>();
-        }
-        _nodesByColor[color].Add(newNode);
+            // Double-check after acquiring lock (another thread may have created it)
+            if (_spatialGrid.TryGetValue(gridKey, out cellNodes))
+            {
+                for (int i = 0; i < cellNodes.Count; i++)
+                {
+                    var node = cellNodes[i];
+                    if (node.Color.Equals(color))
+                    {
+                        var dx = node.NormalizedX - normalizedX;
+                        var dy = node.NormalizedY - normalizedY;
+                        var distSq = dx * dx + dy * dy;
 
-        // Add to spatial grid
-        if (!_spatialGrid.ContainsKey(gridKey))
-        {
-            _spatialGrid[gridKey] = new List<GraphNode>();
-        }
-        _spatialGrid[gridKey].Add(newNode);
+                        if (distSq < 0.0025f)
+                        {
+                            node.ObservationCount++;
+                            return node;
+                        }
+                    }
+                }
+            }
 
-        return newNode;
+            // Create new node
+            var newNode = new GraphNode(color, normalizedX, normalizedY);
+            _allNodes.Add(newNode);
+
+            // Add to color index
+            if (!_nodesByColor.ContainsKey(color))
+            {
+                _nodesByColor[color] = new List<GraphNode>();
+            }
+            _nodesByColor[color].Add(newNode);
+
+            // Add to spatial grid
+            if (!_spatialGrid.ContainsKey(gridKey))
+            {
+                _spatialGrid[gridKey] = new List<GraphNode>();
+            }
+            _spatialGrid[gridKey].Add(newNode);
+
+            return newNode;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -95,13 +153,13 @@ public class FastContextGraph
     }
 
     /// <summary>
-    /// Add edge between two nodes - SUPER FAST
+    /// Add edge between two nodes - thread-safe
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void AddEdge(GraphNode fromNode, Direction direction, GraphNode toNode, float weight = 1.0f)
     {
+        // Note: fromNode.AddEdge is already thread-safe at the node level
         fromNode.AddEdge(direction, toNode, weight);
-        _totalEdges++;
+        System.Threading.Interlocked.Increment(ref _totalEdges);
     }
 
     /// <summary>
@@ -198,13 +256,41 @@ public class FastContextGraph
         return closestNode.GetWeightedNeighbors(direction);
     }
 
-    public int GetNodeCount() => _allNodes.Count;
+    public int GetNodeCount()
+    {
+        lock (_graphLock)
+        {
+            return _allNodes.Count;
+        }
+    }
+
     public int GetEdgeCount() => _totalEdges;
-    public int GetColorCount() => _nodesByColor.Count;
+
+    public int GetColorCount()
+    {
+        lock (_graphLock)
+        {
+            return _nodesByColor.Count;
+        }
+    }
 
     public List<ColorRgb> GetAllColors()
     {
-        return _nodesByColor.Keys.ToList();
+        lock (_graphLock)
+        {
+            return new List<ColorRgb>(_nodesByColor.Keys);
+        }
+    }
+
+    /// <summary>
+    /// Get all nodes for graph analysis
+    /// </summary>
+    public List<GraphNode> GetAllNodes()
+    {
+        lock (_graphLock)
+        {
+            return new List<GraphNode>(_allNodes);
+        }
     }
 
     public void PrintStats()
@@ -212,5 +298,34 @@ public class FastContextGraph
         Console.WriteLine($"[FastContextGraph] Nodes: {_allNodes.Count:N0}, Edges: {_totalEdges:N0}, Colors: {_nodesByColor.Count}");
         Console.WriteLine($"[FastContextGraph] Avg edges per node: {(_allNodes.Count > 0 ? _totalEdges / (double)_allNodes.Count : 0):F1}");
         Console.WriteLine($"[FastContextGraph] Spatial grid cells used: {_spatialGrid.Count}/{GRID_SIZE * GRID_SIZE}");
+
+        // Calculate weight statistics
+        if (_allNodes.Count > 0)
+        {
+            var totalWeight = 0.0;
+            var maxWeight = 0f;
+            var weightCounts = new Dictionary<int, int>(); // weight bucket -> count
+
+            foreach (var node in _allNodes)
+            {
+                foreach (var edgeList in node.Edges.Values)
+                {
+                    foreach (var (_, weight) in edgeList)
+                    {
+                        totalWeight += weight;
+                        if (weight > maxWeight) maxWeight = weight;
+
+                        // Bucket weights for distribution analysis
+                        var bucket = (int)weight;
+                        weightCounts[bucket] = weightCounts.GetValueOrDefault(bucket, 0) + 1;
+                    }
+                }
+            }
+
+            var avgWeight = totalWeight / Math.Max(_totalEdges, 1);
+            Console.WriteLine($"[FastContextGraph] Edge weights - Avg: {avgWeight:F2}, Max: {maxWeight:F1}");
+            Console.WriteLine($"[FastContextGraph] High-frequency patterns (weight >= 5): {weightCounts.Where(kvp => kvp.Key >= 5).Sum(kvp => kvp.Value)}");
+            Console.WriteLine($"[FastContextGraph] Pattern learning: Higher weights = more frequent color co-occurrence!");
+        }
     }
 }

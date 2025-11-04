@@ -2,163 +2,356 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="800"
+        mc:Ignorable="d" d:DesignWidth="1900" d:DesignHeight="1300"
         x:Class="NNImage.MainWindow"
-        Title="Color Adjacency Neural Generator"
-        MinWidth="1000" MinHeight="600">
+        Title="Neural Image Generator"
+        MinWidth="1200" MinHeight="700"
+        Background="#1E1E1E">
 
     <Window.Styles>
         <Style Selector="Button">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="12,6"/>
-            <Setter Property="Margin" Value="5"/>
-            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="Cursor" Value="Hand"/>
         </Style>
-        <Style Selector="TextBlock.header">
-            <Setter Property="FontSize" Value="16"/>
-            <Setter Property="FontWeight" Value="Bold"/>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="#3E3E42"/>
+        </Style>
+        <Style Selector="Button:pressed">
+            <Setter Property="Background" Value="#007ACC"/>
+        </Style>
+        <Style Selector="Button:disabled">
+            <Setter Property="Opacity" Value="0.4"/>
+            <Setter Property="Cursor" Value="Arrow"/>
+        </Style>
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+        </Style>
+        <Style Selector="TextBlock.label">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="#9B9B9B"/>
+        </Style>
+        <Style Selector="TextBlock.status">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground" Value="#6A9955"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+        <Style Selector="NumericUpDown">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+        </Style>
+        <Style Selector="Border.sidebar">
+            <Setter Property="Background" Value="#252526"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1,0,0,0"/>
+        </Style>
+        <Style Selector="Border.control-group">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="12"/>
             <Setter Property="Margin" Value="0,0,0,10"/>
         </Style>
-        <Style Selector="Border.panel">
-            <Setter Property="Background" Value="#F5F5F5"/>
-            <Setter Property="BorderBrush" Value="#CCCCCC"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="5"/>
-            <Setter Property="Padding" Value="15"/>
-            <Setter Property="Margin" Value="5"/>
+        <Style Selector="Separator">
+            <Setter Property="Background" Value="#3F3F46"/>
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Margin" Value="0,8"/>
         </Style>
     </Window.Styles>
 
-    <Grid Margin="10">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="280"/>
+        </Grid.ColumnDefinitions>
 
-        <!-- Control Panel -->
-        <Border Grid.Row="0" Classes="panel">
-            <StackPanel>
-                <TextBlock Classes="header" Text="Controls"/>
+        <!-- Main Image Display Area (95% of space) -->
+        <Border Grid.Column="0" Background="#1E1E1E" Padding="10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
 
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
+                <!-- Top Bar with Quick Actions -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Name="GenerateButton" 
+                            Content="⚡ Generate" 
+                            Click="GenerateButton_Click"
+                            IsEnabled="False"
+                            Padding="20,8"
+                            FontSize="14"
+                            FontWeight="SemiBold"/>
+                    <Button Name="StopGenerationButton" 
+                            Content="⏹ Stop" 
+                            Click="StopGenerationButton_Click"
+                            IsVisible="False"
+                            Padding="16,8"
+                            FontSize="14"
+                            Background="#C42B1C"
+                            FontWeight="SemiBold"/>
+                    <Button Name="SaveButton" 
+                            Content="💾 Save Image" 
+                            Click="SaveButton_Click"
+                            IsEnabled="False"
+                            Padding="16,8"/>
+                    <Button Name="SaveModelButton"
+                            Content="🧠 Save Model As..."
+                            Click="SaveModelAsButton_Click"
+                            IsEnabled="False"
+                            Padding="16,8"/>
 
-                    <!-- Training Section -->
-                    <StackPanel Grid.Column="0" Margin="0,0,10,0">
-                        <TextBlock Text="Training" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                    <TextBlock Text="📂 Load Model:" 
+                             VerticalAlignment="Center" 
+                             Margin="12,0,6,0"/>
+                    <ComboBox Name="LoadModelComboBox"
+                              Width="200"
+                              SelectionChanged="LoadModelComboBox_SelectionChanged"
+                              VerticalAlignment="Center">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <TextBlock Text="Image Folder:" VerticalAlignment="Center" Width="120"/>
-                            <TextBox Name="FolderPathTextBox" Width="250" IsReadOnly="True" Margin="5,0"/>
-                            <Button Name="SelectFolderButton" Content="Browse..." Click="SelectFolderButton_Click"/>
+                    <CheckBox Name="UseCudaCheckBox"
+                              Content="Use CUDA for FastWFC (bit-exact)"
+                              IsChecked="False"
+                              VerticalAlignment="Center"
+                              Margin="12,0,0,0">
+                        <ToolTip.Tip>
+                            Offloads propagation/entropy to GPU when available. Falls back to CPU if no CUDA. Output remains bit-for-bit identical.
+                        </ToolTip.Tip>
+                    </CheckBox>
+
+                    <TextBlock Name="TrainingStatusText" 
+                             Classes="status"
+                             Text="No training data loaded" 
+                             VerticalAlignment="Center" 
+                             Margin="20,0,0,0"/>
+                </StackPanel>
+
+                <!-- Generated Image -->
+                <Border Grid.Row="1" 
+                        Background="#252526" 
+                        BorderBrush="#3F3F46" 
+                        BorderThickness="1"
+                        CornerRadius="4">
+                    <Viewbox Stretch="Uniform" 
+                           StretchDirection="Both"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Margin="10">
+                        <Image Name="GeneratedImage" 
+                             Width="512" 
+                             Height="512"/>
+                    </Viewbox>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- Sidebar Controls (5% of space) -->
+        <Border Grid.Column="1" Classes="sidebar">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="12">
+
+                    <!-- Generation Settings -->
+                    <Border Classes="control-group">
+                        <StackPanel>
+                            <TextBlock Text="GENERATION" 
+                                     FontWeight="SemiBold" 
+                                     FontSize="11" 
+                                     Foreground="#569CD6"
+                                     Margin="0,0,0,8"/>
+
+                            <TextBlock Classes="label" Text="Mode" Margin="0,0,0,3"/>
+                            <ComboBox Name="GenerationModeCombo"
+                                    SelectedIndex="0"
+                                    Margin="0,0,0,8">
+                                <ComboBoxItem Content="⚡ Fast Square (Fastest)"/>
+                                <ComboBoxItem Content="🎨 Blended (Smooth)"/>
+                                <ComboBoxItem Content="🌿 Fast Organic (Natural)"/>
+                                <ComboBoxItem Content="🎯 Radial (Center Wave)"/>
+                                <ComboBoxItem Content="🔲 Edge First (Outside-In)"/>
+                                <ComboBoxItem Content="⭕ Center Out (Single Seed)"/>
+                                <ComboBoxItem Content="🌀 Spiral (Angular)"/>
+                            </ComboBox>
+
+                            <TextBlock Classes="label" Text="Seed Count" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <NumericUpDown Name="SeedCount" 
+                                             Value="8" 
+                                             Minimum="1" 
+                                             Maximum="50" 
+                                             Increment="1"
+                                             Width="100"/>
+                                <TextBlock Text="seeds" 
+                                         VerticalAlignment="Center" 
+                                         Margin="8,0,0,0"
+                                         Classes="label"/>
+                            </StackPanel>
+
+                            <TextBlock Classes="label" Text="Entropy (Randomness)" Margin="0,0,0,3"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Slider Name="EntropySlider"
+                                       Value="0"
+                                       Minimum="0"
+                                       Maximum="100"
+                                       Width="150"
+                                       VerticalAlignment="Center"/>
+                                <TextBlock Name="EntropyValueText"
+                                         Text="0%"
+                                         VerticalAlignment="Center"
+                                         Margin="8,0,0,0"
+                                         Width="40"
+                                         Classes="label"/>
+                            </StackPanel>
+
+                            <TextBlock Classes="label" Text="Width" Margin="0,0,0,3"/>
+                            <NumericUpDown Name="OutputWidth" 
+                                         Value="512" 
+                                         Minimum="128" 
+                                         Maximum="3840" 
+                                         Increment="64"
+                                         Margin="0,0,0,8"/>
+
+                            <TextBlock Classes="label" Text="Height" Margin="0,0,0,3"/>
+                            <NumericUpDown Name="OutputHeight" 
+                                         Value="512" 
+                                         Minimum="128" 
+                                         Maximum="2160" 
+                                         Increment="64"/>
                         </StackPanel>
+                    </Border>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <TextBlock Text="Color Quantization:" VerticalAlignment="Center" Width="120"/>
+                    <!-- Training Settings -->
+                    <Border Classes="control-group">
+                        <StackPanel>
+                            <TextBlock Text="TRAINING" 
+                                     FontWeight="SemiBold" 
+                                     FontSize="11" 
+                                     Foreground="#569CD6"
+                                     Margin="0,0,0,8"/>
+
+                            <TextBlock Classes="label" Text="Color Palette" Margin="0,0,0,3"/>
                             <NumericUpDown Name="QuantizationLevel" 
                                          Value="128" 
                                          Minimum="16" 
                                          Maximum="256" 
                                          Increment="16"
-                                         Width="100"
-                                         Margin="5,0"/>
-                            <TextBlock Text="colors" VerticalAlignment="Center" Margin="5,0"/>
-                        </StackPanel>
+                                         Margin="0,0,0,8"/>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                            <Button Name="TrainButton" Content="🎓 Train Model" Click="TrainButton_Click"/>
-                            <TextBlock Name="TrainingStatusText" 
-                                     Text="Ready to train" 
-                                     VerticalAlignment="Center" 
-                                     Margin="10,0"
-                                     Foreground="Gray"/>
-                        </StackPanel>
-                    </StackPanel>
+                            <TextBlock Text="Local Training" 
+                                     FontSize="11" 
+                                     Foreground="#569CD6"
+                                     Margin="0,8,0,4"/>
 
-                    <!-- Generation Section -->
-                    <StackPanel Grid.Column="1" Margin="10,0,0,0">
-                        <TextBlock Text="Generation" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                            <Button Name="SelectFolderButton" 
+                                  Content="📁 Select Training Folder" 
+                                  Click="SelectFolderButton_Click"
+                                  HorizontalAlignment="Stretch"
+                                  Margin="0,0,0,5"/>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <TextBlock Text="Output Width:" VerticalAlignment="Center" Width="100"/>
-                            <NumericUpDown Name="OutputWidth" 
-                                         Value="256" 
-                                         Minimum="64" 
-                                         Maximum="1024" 
-                                         Increment="32"
-                                         Width="100"
-                                         Margin="5,0"/>
-                        </StackPanel>
+                            <Button Name="TrainButton" 
+                                  Content="🎓 Train Model" 
+                                  Click="TrainButton_Click"
+                                  HorizontalAlignment="Stretch"
+                                  Margin="0,0,0,5"/>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <TextBlock Text="Output Height:" VerticalAlignment="Center" Width="100"/>
-                            <NumericUpDown Name="OutputHeight" 
-                                         Value="256" 
-                                         Minimum="64" 
-                                         Maximum="1024" 
-                                         Increment="32"
-                                         Width="100"
-                                         Margin="5,0"/>
-                        </StackPanel>
+                            <Separator Margin="0,8"/>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                            <Button Name="GenerateButton" 
-                                  Content="🎨 Generate Image" 
-                                  Click="GenerateButton_Click"
-                                  IsEnabled="False"/>
-                            <Button Name="SaveButton" 
-                                  Content="💾 Save Image" 
-                                  Click="SaveButton_Click"
+                            <TextBlock Text="Online Training" 
+                                     FontSize="11" 
+                                     Foreground="#569CD6"
+                                     Margin="0,4,0,4"/>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,5">
+                                <TextBlock Text="Batch Size:" VerticalAlignment="Center" Width="80"/>
+                                <NumericUpDown Name="OnlineBatchSize" 
+                                             Value="5" 
+                                             Minimum="1" 
+                                             Maximum="20" 
+                                             Increment="1"
+                                             Width="80"
+                                             Margin="5,0"/>
+                            </StackPanel>
+
+                            <Button Name="StartOnlineTrainingButton" 
+                                  Content="🌐 Start Online Training" 
+                                  Click="StartOnlineTrainingButton_Click"
+                                  HorizontalAlignment="Stretch"
+                                  Margin="0,0,0,5"/>
+
+                            <Button Name="StopOnlineTrainingButton" 
+                                  Content="⏸️ Stop Online Training" 
+                                  Click="StopOnlineTrainingButton_Click"
+                                  HorizontalAlignment="Stretch"
                                   IsEnabled="False"
-                                  Margin="5,0,0,0"/>
+                                  Margin="0,0,0,5"/>
+
+                            <Button Name="ClearCacheButton" 
+                                  Content="🗑️ Clear Image Cache" 
+                                  Click="ClearCacheButton_Click"
+                                  HorizontalAlignment="Stretch"
+                                  Margin="0,0,0,5"/>
+
+                            <Separator Margin="0,8"/>
+
+                            <Button Name="ClearTrainingButton" 
+                                  Content="🗑️ Clear All Training Data" 
+                                  Click="ClearTrainingButton_Click"
+                                  HorizontalAlignment="Stretch"
+                                  Foreground="#CE5C5C"
+                                  Margin="0,0,0,5"/>
+
+                            <TextBlock Name="TrainingInfoText"
+                                     Classes="label"
+                                     Text=""
+                                     TextWrapping="Wrap"
+                                     Margin="0,8,0,0"/>
+
+                            <TextBlock Name="OnlineTrainingInfoText"
+                                     Classes="label"
+                                     Text=""
+                                     TextWrapping="Wrap"
+                                     Margin="0,4,0,0"/>
                         </StackPanel>
-                    </StackPanel>
-                </Grid>
-            </StackPanel>
+                    </Border>
+
+                    <!-- Training Samples Preview -->
+                    <Border Classes="control-group">
+                        <StackPanel>
+                            <TextBlock Text="SAMPLES" 
+                                     FontWeight="SemiBold" 
+                                     FontSize="11" 
+                                     Foreground="#569CD6"
+                                     Margin="0,0,0,8"/>
+
+                            <ScrollViewer MaxHeight="200" 
+                                        HorizontalScrollBarVisibility="Disabled"
+                                        VerticalScrollBarVisibility="Auto">
+                                <WrapPanel Name="SampleImagesPanel" 
+                                         Orientation="Horizontal"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+
+                </StackPanel>
+            </ScrollViewer>
         </Border>
-
-        <!-- Image Display Area -->
-        <Grid Grid.Row="1" Margin="0,10,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-
-            <!-- Sample Images -->
-            <Border Grid.Column="0" Classes="panel">
-                <DockPanel>
-                    <TextBlock Classes="header" 
-                             Text="Training Samples" 
-                             DockPanel.Dock="Top"/>
-                    <ScrollViewer HorizontalScrollBarVisibility="Auto" 
-                                VerticalScrollBarVisibility="Auto">
-                        <WrapPanel Name="SampleImagesPanel" 
-                                 Orientation="Horizontal"/>
-                    </ScrollViewer>
-                </DockPanel>
-            </Border>
-
-            <!-- Generated Image -->
-            <Border Grid.Column="1" Classes="panel">
-                <DockPanel>
-                    <TextBlock Classes="header" 
-                             Text="Generated Image" 
-                             DockPanel.Dock="Top"/>
-                    <ScrollViewer HorizontalScrollBarVisibility="Auto" 
-                                VerticalScrollBarVisibility="Auto">
-                        <Viewbox Stretch="Uniform" 
-                               StretchDirection="DownOnly"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center">
-                            <Image Name="GeneratedImage" 
-                                 Width="256" 
-                                 Height="256"/>
-                        </Viewbox>
-                    </ScrollViewer>
-                </DockPanel>
-            </Border>
-        </Grid>
     </Grid>
 </Window>

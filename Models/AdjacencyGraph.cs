@@ -1,52 +1,62 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Collections.Concurrent;
 
-namespace NNImage;
+namespace NNImage.Models;
 
 public class AdjacencyGraph
 {
     // adjacency_graph[color][direction][neighbor_color] = count
-    private readonly Dictionary<ColorRgb, Dictionary<Direction, Dictionary<ColorRgb, int>>> _graph = new();
+    private readonly ConcurrentDictionary<ColorRgb, ConcurrentDictionary<Direction, ConcurrentDictionary<ColorRgb, int>>> _graph = new();
     private readonly Dictionary<ColorRgb, Dictionary<Direction, Dictionary<ColorRgb, double>>> _probabilities = new();
+    private readonly object _normalizeLock = new object();
     private bool _isNormalized;
 
     public void AddAdjacency(ColorRgb centerColor, Direction direction, ColorRgb neighborColor)
     {
-        if (!_graph.ContainsKey(centerColor))
-            _graph[centerColor] = new Dictionary<Direction, Dictionary<ColorRgb, int>>();
+        var colorDict = _graph.GetOrAdd(centerColor, _ => new ConcurrentDictionary<Direction, ConcurrentDictionary<ColorRgb, int>>());
+        var directionDict = colorDict.GetOrAdd(direction, _ => new ConcurrentDictionary<ColorRgb, int>());
+        directionDict.AddOrUpdate(neighborColor, 1, (_, count) => count + 1);
 
-        if (!_graph[centerColor].ContainsKey(direction))
-            _graph[centerColor][direction] = new Dictionary<ColorRgb, int>();
-
-        if (!_graph[centerColor][direction].ContainsKey(neighborColor))
-            _graph[centerColor][direction][neighborColor] = 0;
-
-        _graph[centerColor][direction][neighborColor]++;
         _isNormalized = false;
     }
 
     public void Normalize()
     {
-        _probabilities.Clear();
-
-        foreach (var (color, directions) in _graph)
+        lock (_normalizeLock)
         {
-            _probabilities[color] = new Dictionary<Direction, Dictionary<ColorRgb, double>>();
+            if (_isNormalized)
+                return;
 
-            foreach (var (direction, neighbors) in directions)
+            Console.WriteLine("[AdjacencyGraph] Starting normalization...");
+            _probabilities.Clear();
+
+            System.Threading.Tasks.Parallel.ForEach(_graph, colorPair =>
             {
-                var total = neighbors.Values.Sum();
-                _probabilities[color][direction] = new Dictionary<ColorRgb, double>();
+                var (color, directions) = (colorPair.Key, colorPair.Value);
+                var colorProbs = new Dictionary<Direction, Dictionary<ColorRgb, double>>();
 
-                foreach (var (neighborColor, count) in neighbors)
+                foreach (var (direction, neighbors) in directions)
                 {
-                    _probabilities[color][direction][neighborColor] = (double)count / total;
-                }
-            }
-        }
+                    var total = neighbors.Values.Sum();
+                    colorProbs[direction] = new Dictionary<ColorRgb, double>();
 
-        _isNormalized = true;
+                    foreach (var (neighborColor, count) in neighbors)
+                    {
+                        colorProbs[direction][neighborColor] = (double)count / total;
+                    }
+                }
+
+                lock (_probabilities)
+                {
+                    _probabilities[color] = colorProbs;
+                }
+            });
+
+            _isNormalized = true;
+            Console.WriteLine("[AdjacencyGraph] Normalization complete");
+        }
     }
 
     public ColorRgb? GetRandomNeighbor(ColorRgb centerColor, Direction direction, Random random)

@@ -1,96 +1,169 @@
-using Avalonia.Media.Imaging;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
+using System.Linq;
+using NNImage.Models;
 
-namespace NNImage;
+namespace NNImage.Services;
 
 public class ImageTrainer
 {
-    private readonly AdjacencyGraph _adjacencyGraph = new();
+    private readonly WeightedContextGraph _contextGraph = new();
     private readonly ColorQuantizer _quantizer;
     private readonly int _quantizationLevel;
     private bool _paletteBuilt;
+    private readonly GpuAccelerator _gpu;
+    private readonly int _neighborhoodRadius = 1; // Use 3x3 neighborhood (radius 1)
 
-    public ImageTrainer(int quantizationLevel)
+    public ImageTrainer(int quantizationLevel, GpuAccelerator gpu)
     {
         _quantizationLevel = quantizationLevel;
-        _quantizer = new ColorQuantizer(quantizationLevel);
+        _gpu = gpu;
+        _quantizer = new ColorQuantizer(quantizationLevel, gpu);
+        Console.WriteLine($"[ImageTrainer] Created with quantization level: {quantizationLevel}");
+        Console.WriteLine($"[ImageTrainer] GPU acceleration: {(gpu?.IsAvailable == true ? "ENABLED" : "DISABLED")}");
+        Console.WriteLine($"[ImageTrainer] Using {(_neighborhoodRadius * 2 + 1)}x{(_neighborhoodRadius * 2 + 1)} neighborhood patterns");
     }
 
-    public void ProcessImage(string imagePath)
+    public void ProcessImageData(uint[] pixels, int width, int height)
     {
-        using var stream = File.OpenRead(imagePath);
-        var bitmap = new Bitmap(stream);
+        Console.WriteLine($"[ImageTrainer] ProcessImageData called - Size: {width}x{height}, Pixels: {pixels.Length}");
 
-        var width = bitmap.PixelSize.Width;
-        var height = bitmap.PixelSize.Height;
-
-        // Extract all colors first if palette not built
-        if (!_paletteBuilt)
+        try
         {
-            var allColors = new List<ColorRgb>();
-
-            unsafe
+            // Extract all colors first if palette not built
+            if (!_paletteBuilt)
             {
-                using var lockedBitmap = bitmap.Lock();
-                var ptr = (uint*)lockedBitmap.Address.ToPointer();
+                Console.WriteLine($"[ImageTrainer] Building color palette with parallel processing...");
+                var allColors = new System.Collections.Concurrent.ConcurrentBag<ColorRgb>();
 
-                for (int y = 0; y < height; y++)
+                // Parallel color extraction
+                System.Threading.Tasks.Parallel.For(0, pixels.Length, i =>
                 {
-                    for (int x = 0; x < width; x++)
-                    {
-                        var pixel = ptr[y * width + x];
-                        var color = PixelToColor(pixel);
-                        allColors.Add(color);
-                    }
-                }
+                    var color = PixelToColor(pixels[i]);
+                    allColors.Add(color);
+                });
+
+                Console.WriteLine($"[ImageTrainer] Extracted {allColors.Count} color samples, quantizing...");
+                _quantizer.BuildPalette(allColors.ToList());
+                _paletteBuilt = true;
+                Console.WriteLine($"[ImageTrainer] Palette built successfully");
             }
 
-            _quantizer.BuildPalette(allColors);
-            _paletteBuilt = true;
-        }
+            Console.WriteLine($"[ImageTrainer] Extracting neighborhood patterns with context awareness...");
 
-        // Extract adjacency patterns
-        unsafe
-        {
-            using var lockedBitmap = bitmap.Lock();
-            var ptr = (uint*)lockedBitmap.Address.ToPointer();
+            var localPatterns = new System.Collections.Concurrent.ConcurrentBag<(NeighborhoodPattern pattern, Direction dir, ColorRgb target)>();
 
-            for (int y = 0; y < height; y++)
+            // Parallel pattern extraction by rows
+            System.Threading.Tasks.Parallel.For(0, height, y =>
             {
                 for (int x = 0; x < width; x++)
                 {
-                    var centerPixel = ptr[y * width + x];
+                    var centerPixel = pixels[y * width + x];
                     var centerColor = _quantizer.Quantize(PixelToColor(centerPixel));
 
-                    // Check all 8 directions
+                    // Build neighborhood pattern
+                    var neighbors = new Dictionary<Direction, ColorRgb?>();
                     foreach (var direction in DirectionExtensions.AllDirections)
                     {
                         var (dx, dy) = direction.GetOffset();
                         var nx = x + dx;
                         var ny = y + dy;
 
-                        // Check bounds
                         if (nx >= 0 && nx < width && ny >= 0 && ny < height)
                         {
-                            var neighborPixel = ptr[ny * width + nx];
-                            var neighborColor = _quantizer.Quantize(PixelToColor(neighborPixel));
+                            var neighborPixel = pixels[ny * width + nx];
+                            neighbors[direction] = _quantizer.Quantize(PixelToColor(neighborPixel));
+                        }
+                        else
+                        {
+                            neighbors[direction] = null; // Out of bounds
+                        }
+                    }
 
-                            _adjacencyGraph.AddAdjacency(centerColor, direction, neighborColor);
+                    var pattern = new NeighborhoodPattern(centerColor, neighbors);
+
+                    // For each direction, record what color actually appeared
+                    foreach (var direction in DirectionExtensions.AllDirections)
+                    {
+                        var targetColor = neighbors[direction];
+                        if (targetColor.HasValue)
+                        {
+                            localPatterns.Add((pattern, direction, targetColor.Value));
+
+                            // Also add simple adjacency for fallback
+                            _contextGraph.AddSimpleAdjacency(centerColor, direction, targetColor.Value);
                         }
                     }
                 }
-            }
+            });
+
+            // Batch add patterns to graph with weighting
+            Console.WriteLine($"[ImageTrainer] Adding {localPatterns.Count} context patterns to graph...");
+
+            var patternCounts = new ConcurrentDictionary<(NeighborhoodPattern, Direction, ColorRgb), int>();
+
+            // Parallel counting
+            System.Threading.Tasks.Parallel.ForEach(
+                localPatterns.GroupBy(p => p).Select(g => (pattern: g.Key, count: g.Count())),
+                item =>
+                {
+                    patternCounts[item.pattern] = item.count;
+                });
+
+            // Parallel insertion with batching
+            System.Threading.Tasks.Parallel.ForEach(patternCounts, kvp =>
+            {
+                var ((pattern, dir, target), count) = kvp;
+                _contextGraph.AddPattern(pattern, dir, target, count);
+            });
+
+            Console.WriteLine($"[ImageTrainer] Extracted {patternCounts.Count} unique context patterns");
+            Console.WriteLine($"[ImageTrainer] Total pattern instances: {localPatterns.Count}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ImageTrainer] ERROR in ProcessImageData: {ex.Message}");
+            Console.WriteLine($"[ImageTrainer] Stack trace: {ex.StackTrace}");
+            throw;
         }
     }
 
-    public AdjacencyGraph GetAdjacencyGraph()
+    public WeightedContextGraph GetContextGraph()
     {
-        _adjacencyGraph.Normalize();
-        return _adjacencyGraph;
+        _contextGraph.SetGpuAccelerator(_gpu);
+        _contextGraph.Normalize();
+        Console.WriteLine($"[ImageTrainer] Context graph contains {_contextGraph.GetPatternCount()} patterns and {_contextGraph.GetColorCount()} unique colors");
+        return _contextGraph;
     }
 
+    // Backward compatibility
+    public AdjacencyGraph GetAdjacencyGraph()
+    {
+        // Create a simple adjacency graph from the context graph for compatibility
+        var simpleGraph = new AdjacencyGraph();
+        var colors = _contextGraph.GetAllColors();
+
+        foreach (var color in colors)
+        {
+            var emptyNeighbors = new Dictionary<Direction, ColorRgb?>();
+            var pattern = new NeighborhoodPattern(color, emptyNeighbors);
+
+            foreach (var dir in DirectionExtensions.AllDirections)
+            {
+                var neighbors = _contextGraph.GetPossibleNeighbors(pattern, dir);
+                foreach (var neighbor in neighbors)
+                {
+                    simpleGraph.AddAdjacency(color, dir, neighbor);
+                }
+            }
+        }
+
+        simpleGraph.Normalize();
+        return simpleGraph;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private ColorRgb PixelToColor(uint pixel)
     {
         var a = (byte)((pixel >> 24) & 0xFF);

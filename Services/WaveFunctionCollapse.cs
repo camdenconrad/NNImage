@@ -3,8 +3,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using NNImage.Models;
 
-namespace NNImage;
+namespace NNImage.Services;
 
 public class WaveFunctionCollapse
 {
@@ -14,6 +15,8 @@ public class WaveFunctionCollapse
     private readonly Random _random = new();
     private readonly HashSet<ColorRgb>?[,] _possibilities;
     private readonly ColorRgb?[,] _collapsed;
+
+    public delegate void ProgressCallback(uint[] pixels, int iteration, int totalIterations);
 
     public WaveFunctionCollapse(AdjacencyGraph adjacencyGraph, int width, int height)
     {
@@ -39,10 +42,13 @@ public class WaveFunctionCollapse
         }
     }
 
-    public Bitmap Generate()
+    public uint[] Generate(ProgressCallback? progressCallback = null, int updateFrequency = 10)
     {
+        Console.WriteLine($"[WFC] Starting generation for {_width}x{_height} image");
         int maxIterations = _width * _height * 2;
         int iteration = 0;
+        int totalCells = _width * _height;
+        int lastProgress = 0;
 
         while (iteration < maxIterations)
         {
@@ -50,7 +56,10 @@ public class WaveFunctionCollapse
             var (x, y) = FindMinimumEntropyCell();
 
             if (x == -1)
+            {
+                Console.WriteLine($"[WFC] All cells collapsed at iteration {iteration}");
                 break; // All cells collapsed
+            }
 
             // Collapse the cell
             CollapseCell(x, y);
@@ -59,21 +68,71 @@ public class WaveFunctionCollapse
             Propagate(x, y);
 
             iteration++;
+
+            // Real-time visualization callback
+            if (progressCallback != null && iteration % updateFrequency == 0)
+            {
+                var currentPixels = CreatePixelData();
+                progressCallback(currentPixels, iteration, totalCells);
+            }
+
+            // Progress reporting
+            int progress = (iteration * 100) / totalCells;
+            if (progress > lastProgress && progress % 10 == 0)
+            {
+                Console.WriteLine($"[WFC] Generation progress: {progress}%");
+                lastProgress = progress;
+            }
         }
 
+        Console.WriteLine($"[WFC] Filling remaining cells...");
         // Fill any remaining uncollapsed cells
         FillRemainingCells();
 
-        return CreateBitmap();
+        Console.WriteLine($"[WFC] Creating final pixel data...");
+        var finalPixels = CreatePixelData();
+
+        // Final callback
+        progressCallback?.Invoke(finalPixels, iteration, totalCells);
+
+        return finalPixels;
+    }
+
+    public static Bitmap CreateBitmapFromPixels(uint[] pixels, int width, int height)
+    {
+        var bitmap = new WriteableBitmap(
+            new Avalonia.PixelSize(width, height),
+            new Avalonia.Vector(96, 96),
+            Avalonia.Platform.PixelFormat.Bgra8888,
+            Avalonia.Platform.AlphaFormat.Opaque);
+
+        using var lockedBitmap = bitmap.Lock();
+
+        unsafe
+        {
+            var ptr = (uint*)lockedBitmap.Address.ToPointer();
+
+            for (int i = 0; i < width * height; i++)
+            {
+                ptr[i] = pixels[i];
+            }
+        }
+
+        return bitmap;
     }
 
     private (int x, int y) FindMinimumEntropyCell()
     {
         int minEntropy = int.MaxValue;
         var candidates = new List<(int x, int y)>();
+        var lockObj = new object();
 
-        for (int y = 0; y < _height; y++)
+        // Parallel scan for minimum entropy
+        System.Threading.Tasks.Parallel.For(0, _height, y =>
         {
+            int localMinEntropy = int.MaxValue;
+            var localCandidates = new List<(int x, int y)>();
+
             for (int x = 0; x < _width; x++)
             {
                 if (_collapsed[y, x] != null)
@@ -84,18 +143,36 @@ public class WaveFunctionCollapse
                 if (entropy == 0)
                     continue;
 
-                if (entropy < minEntropy)
+                if (entropy < localMinEntropy)
                 {
-                    minEntropy = entropy;
-                    candidates.Clear();
-                    candidates.Add((x, y));
+                    localMinEntropy = entropy;
+                    localCandidates.Clear();
+                    localCandidates.Add((x, y));
                 }
-                else if (entropy == minEntropy)
+                else if (entropy == localMinEntropy)
                 {
-                    candidates.Add((x, y));
+                    localCandidates.Add((x, y));
                 }
             }
-        }
+
+            // Merge local results
+            if (localCandidates.Count > 0)
+            {
+                lock (lockObj)
+                {
+                    if (localMinEntropy < minEntropy)
+                    {
+                        minEntropy = localMinEntropy;
+                        candidates.Clear();
+                        candidates.AddRange(localCandidates);
+                    }
+                    else if (localMinEntropy == minEntropy)
+                    {
+                        candidates.AddRange(localCandidates);
+                    }
+                }
+            }
+        });
 
         if (candidates.Count == 0)
             return (-1, -1);
@@ -167,7 +244,9 @@ public class WaveFunctionCollapse
     private void Propagate(int startX, int startY)
     {
         var queue = new Queue<(int x, int y)>();
+        var visited = new HashSet<(int x, int y)>();
         queue.Enqueue((startX, startY));
+        visited.Add((startX, startY));
 
         while (queue.Count > 0)
         {
@@ -196,15 +275,21 @@ public class WaveFunctionCollapse
                 // Get valid neighbors from adjacency graph
                 var validNeighbors = _adjacencyGraph.GetPossibleNeighbors(currentColor.Value, direction);
 
-                // Intersect with current possibilities
-                var newPossibilities = neighborPossibilities.Intersect(validNeighbors).ToHashSet();
+                if (validNeighbors.Count == 0)
+                    continue;
 
-                if (newPossibilities.Count < neighborPossibilities.Count)
+                // Fast intersection using HashSet operations
+                var oldCount = neighborPossibilities.Count;
+                neighborPossibilities.IntersectWith(validNeighbors);
+
+                if (neighborPossibilities.Count < oldCount && neighborPossibilities.Count > 0)
                 {
-                    _possibilities[ny, nx] = newPossibilities.Count > 0 ? newPossibilities : neighborPossibilities;
-
-                    if (newPossibilities.Count > 0)
-                        queue.Enqueue((nx, ny));
+                    var coord = (nx, ny);
+                    if (!visited.Contains(coord))
+                    {
+                        queue.Enqueue(coord);
+                        visited.Add(coord);
+                    }
                 }
             }
         }
@@ -230,31 +315,20 @@ public class WaveFunctionCollapse
         }
     }
 
-    private Bitmap CreateBitmap()
+    private uint[] CreatePixelData()
     {
-        var bitmap = new WriteableBitmap(
-            new Avalonia.PixelSize(_width, _height),
-            new Avalonia.Vector(96, 96),
-            Avalonia.Platform.PixelFormat.Bgra8888,
-            Avalonia.Platform.AlphaFormat.Opaque);
+        var pixels = new uint[_width * _height];
 
-        using var lockedBitmap = bitmap.Lock();
-
-        unsafe
+        System.Threading.Tasks.Parallel.For(0, _height, y =>
         {
-            var ptr = (uint*)lockedBitmap.Address.ToPointer();
-
-            for (int y = 0; y < _height; y++)
+            for (int x = 0; x < _width; x++)
             {
-                for (int x = 0; x < _width; x++)
-                {
-                    var color = _collapsed[y, x] ?? new ColorRgb(0, 0, 0);
-                    ptr[y * _width + x] = ColorToPixel(color);
-                }
+                var color = _collapsed[y, x] ?? new ColorRgb(0, 0, 0);
+                pixels[y * _width + x] = ColorToPixel(color);
             }
-        }
+        });
 
-        return bitmap;
+        return pixels;
     }
 
     private uint ColorToPixel(ColorRgb color)

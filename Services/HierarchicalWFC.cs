@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Avalonia.Media.Imaging;
 using NNImage.Models;
 
@@ -27,16 +28,17 @@ public class HierarchicalWFC
 
     public uint[] GenerateHierarchical(ProgressCallback? progressCallback = null)
     {
-        Console.WriteLine($"[HierarchicalWFC] Starting hierarchical generation: {_targetWidth}x{_targetHeight}");
+        Console.WriteLine($"[HierarchicalWFC] Starting SEQUENTIAL hierarchical generation: {_targetWidth}x{_targetHeight}");
 
         // Level 1: Generate at 1/4 resolution (coarse)
         var level1Width = Math.Max(_targetWidth / 4, 64);
         var level1Height = Math.Max(_targetHeight / 4, 64);
 
         Console.WriteLine($"[HierarchicalWFC] Level 1: {level1Width}x{level1Height} (coarse)");
-        progressCallback?.Invoke(null, level1Width, level1Height, 1, "Generating coarse structure...");
+        // Provide an initial empty frame to the UI to size the surface safely
+        progressCallback?.Invoke(new uint[level1Width * level1Height], level1Width, level1Height, 1, "Generating coarse structure...");
 
-        var level1 = GenerateLevel(level1Width, level1Height, null, 4); // Use 9x9 patterns
+        var level1 = GenerateLevelSequential(level1Width, level1Height, null, 1, progressCallback, 1); // 3x3 patterns only
         progressCallback?.Invoke(level1, level1Width, level1Height, 1, "Coarse structure complete");
 
         // Level 2: Upscale to 1/2 resolution (medium)
@@ -44,20 +46,165 @@ public class HierarchicalWFC
         var level2Height = Math.Max(_targetHeight / 2, 128);
 
         Console.WriteLine($"[HierarchicalWFC] Level 2: {level2Width}x{level2Height} (medium)");
-        progressCallback?.Invoke(null, level2Width, level2Height, 2, "Refining structure...");
+        progressCallback?.Invoke(new uint[level2Width * level2Height], level2Width, level2Height, 2, "Refining structure...");
 
-        var level2 = GenerateLevel(level2Width, level2Height, level1, 2); // Use 5x5 patterns
+        var level2 = GenerateLevelSequential(level2Width, level2Height, level1, 1, progressCallback, 2); // 3x3 patterns only
         progressCallback?.Invoke(level2, level2Width, level2Height, 2, "Medium detail complete");
 
-        // Level 3: Final resolution (fine)
-        Console.WriteLine($"[HierarchicalWFC] Level 3: {_targetWidth}x{_targetHeight} (fine)");
-        progressCallback?.Invoke(null, _targetWidth, _targetHeight, 3, "Adding fine details...");
+        // Level 3: Final resolution (fine) - sequential streaming
+        Console.WriteLine($"[HierarchicalWFC] Level 3: {_targetWidth}x{_targetHeight} (fine) - sequential");
+        progressCallback?.Invoke(new uint[_targetWidth * _targetHeight], _targetWidth, _targetHeight, 3, "Adding fine details...");
 
-        var level3 = GenerateLevel(_targetWidth, _targetHeight, level2, 1); // Use 3x3 patterns
+        var level3 = GenerateLevelSequential(_targetWidth, _targetHeight, level2, 1, progressCallback, 3); // 3x3 patterns
         progressCallback?.Invoke(level3, _targetWidth, _targetHeight, 3, "Complete!");
 
         Console.WriteLine($"[HierarchicalWFC] Hierarchical generation complete");
         return level3;
+    }
+
+    private uint[] GenerateLevelParallel(int width, int height, uint[]? previousLevel, int scaleRadius)
+    {
+        var pixels = new uint[width * height];
+        var collapsed = new ColorRgb?[height, width];
+
+        // Seed constraints from previous level in parallel
+        if (previousLevel != null)
+        {
+            var prevWidth = (int)Math.Sqrt(previousLevel.Length * width / height);
+            var prevHeight = previousLevel.Length / prevWidth;
+
+            System.Threading.Tasks.Parallel.For(0, height, y =>
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    var prevX = x * prevWidth / width;
+                    var prevY = y * prevHeight / height;
+                    var prevPixel = previousLevel[prevY * prevWidth + prevX];
+
+                    if (_random.NextDouble() < 0.3)
+                    {
+                        collapsed[y, x] = PixelToColor(prevPixel);
+                    }
+                }
+            });
+        }
+
+        // Parallel WFC collapse
+        var wfc = new ConstrainedWFC(_multiScaleGraph, width, height, collapsed, scaleRadius);
+        return wfc.GenerateParallel();
+    }
+
+    private uint[] GenerateLevelSequential(int width, int height, uint[]? previousLevel, int scaleRadius, ProgressCallback? progress, int level)
+    {
+        var pixels = new uint[width * height];
+        var collapsed = new ColorRgb?[height, width];
+
+        // Seed constraints from previous level (down/upscale)
+        if (previousLevel != null)
+        {
+            // Infer previous level dimensions similarly to parallel version
+            var prevWidth = (int)Math.Sqrt(previousLevel.Length * width / (double)height);
+            if (prevWidth <= 0) prevWidth = Math.Max(1, width / 2);
+            var prevHeight = previousLevel.Length / prevWidth;
+
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    var prevX = x * prevWidth / width;
+                    var prevY = y * prevHeight / height;
+                    var prevPixel = previousLevel[prevY * prevWidth + prevX];
+
+                    // Use a slightly higher constraint ratio for smoother guidance
+                    if (_random.NextDouble() < 0.5)
+                    {
+                        collapsed[y, x] = PixelToColor(prevPixel);
+                    }
+                }
+            }
+        }
+
+        var wfc = new ConstrainedWFC(_multiScaleGraph, width, height, collapsed, scaleRadius);
+
+        // Throttle UI updates to ~30–60ms per frame
+        var sw = new System.Diagnostics.Stopwatch();
+        sw.Start();
+        int lastRowReported = -1;
+
+        // Generate sequentially, streaming progress row-by-row
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                if (collapsed[y, x] == null)
+                {
+                    collapsed[y, x] = wfc.ChooseColorForPublic(x, y); // use exposed chooser
+                }
+                var color = collapsed[y, x]!.Value;
+                pixels[y * width + x] = wfc.ColorToPixelPublic(color);
+            }
+
+            // Progress update per row with light time-based throttle
+            if (progress != null)
+            {
+                if (sw.ElapsedMilliseconds >= 33 || y == height - 1)
+                {
+                    lastRowReported = y;
+                    progress(pixels, width, height, level, $"Row {y + 1}/{height}");
+                    sw.Restart();
+                }
+            }
+        }
+
+        return pixels;
+    }
+
+    private uint[] GenerateLevelTiledParallel(int width, int height, uint[]? previousLevel, int scaleRadius)
+    {
+        // Subdivide into 4x4 tiles for parallel processing
+        var tileSize = Math.Min(width / 4, height / 4);
+        var tilesX = (width + tileSize - 1) / tileSize;
+        var tilesY = (height + tileSize - 1) / tileSize;
+
+        Console.WriteLine($"[HierarchicalWFC] Processing {tilesX}x{tilesY} tiles in parallel");
+
+        var finalPixels = new uint[width * height];
+        var tiles = new List<(int x, int y, int w, int h)>();
+
+        for (int ty = 0; ty < tilesY; ty++)
+        {
+            for (int tx = 0; tx < tilesX; tx++)
+            {
+                var tileX = tx * tileSize;
+                var tileY = ty * tileSize;
+                var tileW = Math.Min(tileSize, width - tileX);
+                var tileH = Math.Min(tileSize, height - tileY);
+                tiles.Add((tileX, tileY, tileW, tileH));
+            }
+        }
+
+        // Process tiles in parallel
+        System.Threading.Tasks.Parallel.ForEach(tiles, tile =>
+        {
+            var (tileX, tileY, tileW, tileH) = tile;
+            var tilePixels = GenerateLevel(tileW, tileH, previousLevel, scaleRadius);
+
+            // Copy tile back to final image
+            lock (finalPixels)
+            {
+                for (int y = 0; y < tileH; y++)
+                {
+                    for (int x = 0; x < tileW; x++)
+                    {
+                        var srcIdx = y * tileW + x;
+                        var dstIdx = (tileY + y) * width + (tileX + x);
+                        finalPixels[dstIdx] = tilePixels[srcIdx];
+                    }
+                }
+            }
+        });
+
+        return finalPixels;
     }
 
     private uint[] GenerateLevel(int width, int height, uint[]? previousLevel, int scaleRadius)
@@ -140,24 +287,56 @@ public class HierarchicalWFC
                 {
                     if (_collapsed[y, x] == null)
                     {
-                        // Choose color based on neighbors and multi-scale patterns
                         _collapsed[y, x] = ChooseColor(x, y);
                     }
                 }
             }
 
-            // Convert to pixels
+            return CreatePixelArray();
+        }
+
+        public uint[] GenerateParallel()
+        {
+            // Parallel constrained collapse by rows
+            System.Threading.Tasks.Parallel.For(0, _height, y =>
+            {
+                for (int x = 0; x < _width; x++)
+                {
+                    if (_collapsed[y, x] == null)
+                    {
+                        _collapsed[y, x] = ChooseColor(x, y);
+                    }
+                }
+            });
+
+            return CreatePixelArray();
+        }
+
+        private uint[] CreatePixelArray()
+        {
             var pixels = new uint[_width * _height];
-            for (int y = 0; y < _height; y++)
+
+            // Parallel pixel conversion
+            System.Threading.Tasks.Parallel.For(0, _height, y =>
             {
                 for (int x = 0; x < _width; x++)
                 {
                     var color = _collapsed[y, x] ?? new ColorRgb(0, 0, 0);
                     pixels[y * _width + x] = ColorToPixel(color);
                 }
-            }
+            });
 
             return pixels;
+        }
+
+        public ColorRgb ChooseColorForPublic(int x, int y)
+        {
+            return ChooseColor(x, y);
+        }
+
+        public uint ColorToPixelPublic(ColorRgb color)
+        {
+            return ColorToPixel(color);
         }
 
         private ColorRgb ChooseColor(int x, int y)

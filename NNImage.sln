@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NNImage", "NNImage\NNImage.csproj", "{846AD13B-3E21-4B95-96F8-C3D1578B448D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NNImage", "NNImage.csproj", "{846AD13B-3E21-4B95-96F8-C3D1578B448D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

@@ -41,11 +41,18 @@
                        TextWrapping="Wrap"/>
         </ScrollViewer>
 
-        <TextBlock Name="StatusText" 
-                   Grid.Row="3"
-                   Text="Starting..." 
-                   FontSize="12"
-                   Foreground="#6A9955"
-                   TextAlignment="Center"/>
+        <StackPanel Grid.Row="3" Orientation="Vertical" Spacing="5">
+            <TextBlock Name="StatusText" 
+                       Text="Starting..." 
+                       FontSize="12"
+                       Foreground="#6A9955"
+                       TextAlignment="Center"/>
+            <TextBlock Name="EtaText" 
+                       Text="" 
+                       FontSize="11"
+                       Foreground="#9B9B9B"
+                       TextAlignment="Center"
+                       FontStyle="Italic"/>
+        </StackPanel>
     </Grid>
 </Window>
